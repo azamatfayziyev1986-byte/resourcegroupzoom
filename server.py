@@ -3,7 +3,7 @@ import json
 import uuid
 import random
 from typing import Dict, List, Any, Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, File, UploadFile, Response
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, File, UploadFile, Response, Body
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -256,6 +256,25 @@ async def api_room_attendance_export(room_id: str):
     )
 
 
+@app.post("/api/rooms/{room_id}/summary")
+async def save_summary_endpoint(room_id: str, payload: dict = Body(...)):
+    norm_id = normalize_room_id(room_id)
+    title = payload.get("title", f"Majlis {norm_id} Bayonnomasi")
+    summary = payload.get("summary", "")
+    decisions = payload.get("decisions", "")
+    action_items = payload.get("action_items", "")
+    database.save_meeting_summary(norm_id, title, summary, decisions, action_items)
+    return {"status": "ok", "message": "AI Xulosasi saqlandi"}
+
+
+@app.get("/api/rooms/{room_id}/summary")
+async def get_summary_endpoint(room_id: str):
+    norm_id = normalize_room_id(room_id)
+    summary_data = database.get_meeting_summary(norm_id)
+    return {"status": "ok", "summary": summary_data}
+
+
+
 # ==================== FILE UPLOAD API ====================
 
 @app.post("/api/upload")
@@ -416,6 +435,10 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                     "pinned_message": room.get("pinned_message"),
                     "mute_av_lock": room.get("mute_av_lock", False),
                     "screen_lock": room.get("screen_lock", False),
+                    "waiting_room": room.get("waiting_room", False),
+                    "watermark_enabled": room.get("watermark_enabled", False),
+                    "active_quiz": room.get("active_quiz"),
+                    "youtube_state": room.get("youtube_state"),
                     "breakouts": room.get("breakouts", [])
                 }))
 
@@ -884,8 +907,129 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                             await p["ws"].send_text(broadcast)
                         except Exception:
                             pass
-                    room["breakouts"] = []
-                    broadcast = json.dumps({"type": "breakout-ended"})
+
+            elif action == "youtube-sync":
+                room["youtube_state"] = data.get("state")
+                broadcast = json.dumps({
+                    "type": "youtube-sync",
+                    "state": data.get("state"),
+                    "by": peer_name
+                })
+                for pid, p in room["peers"].items():
+                    if pid != peer_id:
+                        try:
+                            await p["ws"].send_text(broadcast)
+                        except Exception:
+                            pass
+
+            elif action == "quiz-create":
+                quiz_data = data.get("quiz")
+                room["active_quiz"] = quiz_data
+                room["quiz_answers"] = {}
+                broadcast = json.dumps({
+                    "type": "quiz-started",
+                    "quiz": quiz_data,
+                    "by": peer_name
+                })
+                for pid, p in room["peers"].items():
+                    try:
+                        await p["ws"].send_text(broadcast)
+                    except Exception:
+                        pass
+
+            elif action == "quiz-answer":
+                quiz_answers = room.setdefault("quiz_answers", {})
+                answer_index = data.get("answer")
+                time_taken = data.get("time_taken", 10)
+                quiz_answers[peer_id] = {
+                    "peer_id": peer_id,
+                    "name": peer_name,
+                    "answer": answer_index,
+                    "time_taken": time_taken
+                }
+                host_id = room.get("host_id")
+                if host_id in room["peers"]:
+                    try:
+                        await room["peers"][host_id]["ws"].send_text(json.dumps({
+                            "type": "quiz-progress",
+                            "total_answers": len(quiz_answers),
+                            "total_peers": len(room["peers"])
+                        }))
+                    except Exception:
+                        pass
+
+            elif action == "quiz-end":
+                quiz_data = room.get("active_quiz", {})
+                answers = room.get("quiz_answers", {})
+                correct_idx = quiz_data.get("correct", 0)
+                leaderboard = []
+                for pid, ans in answers.items():
+                    is_correct = (ans["answer"] == correct_idx)
+                    score = max(100, int(1000 - (ans["time_taken"] * 50))) if is_correct else 0
+                    leaderboard.append({
+                        "name": ans["name"],
+                        "score": score,
+                        "is_correct": is_correct
+                    })
+                leaderboard.sort(key=lambda x: x["score"], reverse=True)
+                broadcast = json.dumps({
+                    "type": "quiz-ended",
+                    "correct": correct_idx,
+                    "leaderboard": leaderboard
+                })
+                for pid, p in room["peers"].items():
+                    try:
+                        await p["ws"].send_text(broadcast)
+                    except Exception:
+                        pass
+
+            elif action == "speaker-timer":
+                timer_data = data.get("timer", {})
+                broadcast = json.dumps({
+                    "type": "speaker-timer",
+                    "timer": timer_data,
+                    "by": peer_name
+                })
+                for pid, p in room["peers"].items():
+                    try:
+                        await p["ws"].send_text(broadcast)
+                    except Exception:
+                        pass
+
+            elif action == "sound-effect":
+                sound = data.get("sound")
+                broadcast = json.dumps({
+                    "type": "sound-effect",
+                    "sound": sound,
+                    "by": peer_name
+                })
+                for pid, p in room["peers"].items():
+                    try:
+                        await p["ws"].send_text(broadcast)
+                    except Exception:
+                        pass
+
+            elif action == "focus-status":
+                focus_state = data.get("status", "active")
+                host_id = room.get("host_id")
+                if host_id in room["peers"]:
+                    try:
+                        await room["peers"][host_id]["ws"].send_text(json.dumps({
+                            "type": "focus-status",
+                            "peer_id": peer_id,
+                            "name": peer_name,
+                            "status": focus_state
+                        }))
+                    except Exception:
+                        pass
+
+            elif action == "watermark-toggle":
+                if is_host:
+                    room["watermark_enabled"] = data.get("enabled", False)
+                    broadcast = json.dumps({
+                        "type": "watermark-toggle",
+                        "enabled": room["watermark_enabled"]
+                    })
                     for pid, p in room["peers"].items():
                         try:
                             await p["ws"].send_text(broadcast)

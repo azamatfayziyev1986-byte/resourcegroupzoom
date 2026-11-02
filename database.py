@@ -45,6 +45,19 @@ def init_db():
         except sqlite3.OperationalError:
             pass
 
+    # Meeting Summaries Table (AI Protocol & Executive Action Items)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS meeting_summaries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_id TEXT NOT NULL,
+            title TEXT,
+            summary TEXT NOT NULL,
+            decisions TEXT,
+            action_items TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
     # 2. Chat Messages Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS chat_messages (
@@ -550,4 +563,29 @@ def generate_attendance_csv(room_id: str) -> str:
         csv_lines.append(f'"{name}","{first_joined}","{last_active}","{dur}","{status}"')
     
     return "\r\n".join(csv_lines)
+
+
+def save_meeting_summary(room_id: str, title: str, summary: str, decisions: str = "", action_items: str = ""):
+    """Saves AI meeting summary and protocol to database."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO meeting_summaries (room_id, title, summary, decisions, action_items)
+        VALUES (?, ?, ?, ?, ?);
+    """, (room_id, title, summary, decisions, action_items))
+    conn.commit()
+    conn.close()
+
+
+def get_meeting_summary(room_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieves the latest AI meeting summary for a room."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT * FROM meeting_summaries WHERE room_id = ? ORDER BY id DESC LIMIT 1;
+    """, (room_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
 

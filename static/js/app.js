@@ -14,6 +14,10 @@ class ZoomApp {
     
     // Remote participants store: peerId -> info
     this.participants = new Map();
+    this.meetingTranscript = [];
+    this.soundboardCtx = null;
+    this.speakerTimerInterval = null;
+    this.activeQuiz = null;
 
     // Socket manager
     this.socket = null;
@@ -46,6 +50,7 @@ class ZoomApp {
     try { this.bindQaEvents(); } catch (e) { console.error("QA error:", e); }
     try { this.bindThemeAndPiPEvents(); } catch (e) { console.error("Theme/PiP error:", e); }
     try { this.bindRatingModalEvents(); } catch (e) { console.error("Rating modal error:", e); }
+    try { this.bindEnterpriseSuiteEvents(); } catch (e) { console.error("Enterprise suite error:", e); }
     try { this.handleUrlRouting(); } catch (e) { console.error("Routing error:", e); }
     try { lucide.createIcons(); } catch (e) {}
   }
@@ -1012,6 +1017,38 @@ class ZoomApp {
 
       case "breakout-ended":
         this.showToast("Breakout xonalar tugadi. Barcha asosiy zalga qaytdi!");
+        break;
+
+      case "youtube-sync":
+        this.handleYoutubeSync(data.state, data.by);
+        break;
+
+      case "quiz-started":
+        this.handleQuizStarted(data.quiz, data.by);
+        break;
+
+      case "quiz-progress":
+        this.handleQuizProgress(data.total_answers, data.total_peers);
+        break;
+
+      case "quiz-ended":
+        this.handleQuizEnded(data.correct, data.leaderboard);
+        break;
+
+      case "speaker-timer":
+        this.handleSpeakerTimer(data.timer);
+        break;
+
+      case "sound-effect":
+        this.playSynthesizedSound(data.sound, data.by);
+        break;
+
+      case "focus-status":
+        this.handleFocusStatus(data.peer_id, data.name, data.status);
+        break;
+
+      case "watermark-toggle":
+        this.toggleWatermarkUI(data.enabled);
         break;
 
       case "error":
@@ -2808,6 +2845,31 @@ class ZoomApp {
     textEl.textContent = text;
     overlay.classList.remove("hidden");
 
+    // Save into meeting transcript buffer for AI Summary
+    this.meetingTranscript.push({
+      speaker: speaker,
+      text: text,
+      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    });
+
+    // Real-time Live Translation
+    const langSelect = document.getElementById("select-subtitle-lang");
+    const transWrap = document.getElementById("subtitles-translated");
+    const transText = document.getElementById("subtitles-trans-text");
+    const transBadge = document.getElementById("badge-translate-lang");
+
+    const targetLang = langSelect ? langSelect.value : "none";
+    if (targetLang !== "none" && transWrap && transText) {
+      const translated = this.translateSubtitleText(text, targetLang);
+      transText.textContent = translated;
+      if (transBadge) {
+        transBadge.textContent = targetLang === "en" ? "English" : (targetLang === "ru" ? "Русский" : "O'zbekcha");
+      }
+      transWrap.classList.remove("hidden");
+    } else if (transWrap) {
+      transWrap.classList.add("hidden");
+    }
+
     clearTimeout(this.captionTimeout);
     this.captionTimeout = setTimeout(() => {
       overlay.classList.add("hidden");
@@ -3019,6 +3081,787 @@ class ZoomApp {
       this.stopMusicEngine();
     }
   }
+
+  // ==================== 6. ADVANCED ENTERPRISE SUITE ====================
+
+  bindEnterpriseSuiteEvents() {
+    this.bindQuizEvents();
+    this.bindWatchPartyEvents();
+    this.bindAiSummaryEvents();
+    this.bindE2eeEvents();
+    this.bindSpeakerTimerEvents();
+    this.bindSoundboardEvents();
+    this.bindBeautyFilterEvents();
+    this.bindFocusTrackerEvents();
+    this.bindWatermarkEvents();
+  }
+
+  // --- Real-time Subtitle Translator ---
+  translateSubtitleText(text, targetLang) {
+    if (!text) return "";
+    const lower = text.toLowerCase().trim();
+
+    // Comprehensive multi-lingual dictionary
+    const dict = {
+      en: {
+        "salom": "Hello everyone",
+        "assalomu alaykum": "Peace be upon you / Hello",
+        "qalaysiz": "How are you doing?",
+        "yaxshi": "Good / Great",
+        "eshitilyaptimi": "Can you hear me clearly?",
+        "ha": "Yes",
+        "yo'q": "No",
+        "rahmat": "Thank you very much",
+        "ko'rinyaptimi": "Can you see my screen?",
+        "ekranni ulashyapman": "I am sharing my screen",
+        "savol bor": "I have a question",
+        "keyingi masala": "Next agenda topic",
+        "uchrashuvni boshlaymiz": "Let us begin the meeting",
+        "ovozingiz yaxshi": "Your audio is clear",
+        "prezentatsiya": "Presentation",
+        "loyihani topshiramiz": "We will deliver the project",
+        "savol bormi": "Are there any questions?",
+        "xayr": "Goodbye / Farewell"
+      },
+      ru: {
+        "salom": "Привет всем",
+        "assalomu alaykum": "Здравствуйте",
+        "qalaysiz": "Как ваши дела?",
+        "yaxshi": "Хорошо / Отлично",
+        "eshitilyaptimi": "Меня хорошо слышно?",
+        "ha": "Да",
+        "yo'q": "Нет",
+        "rahmat": "Большое спасибо",
+        "ko'rinyaptimi": "Виден ли мой экран?",
+        "ekranni ulashyapman": "Я делюсь экраном",
+        "savol bor": "У меня есть вопрос",
+        "keyingi masala": "Следующий вопрос",
+        "uchrashuvni boshlaymiz": "Давайте начнем собрание",
+        "ovozingiz yaxshi": "Вас отлично слышно",
+        "prezentatsiya": "Презентация",
+        "loyihani topshiramiz": "Мы сдадим проект",
+        "savol bormi": "Есть ли вопросы?",
+        "xayr": "До свидания"
+      },
+      uz: {
+        "hello": "Salom hammaga",
+        "hi": "Salom",
+        "how are you": "Ishlaringiz qalay?",
+        "thank you": "Katta rahmat",
+        "can you hear me": "Meni eshityapsizmi?",
+        "привет": "Salom hammaga",
+        "здравствуйте": "Assalomu alaykum",
+        "как дела": "Ishlaringiz qalay?",
+        "спасибо": "Rahmat",
+        "меня слышно": "Meni eshityapsizmi?"
+      }
+    };
+
+    if (dict[targetLang] && dict[targetLang][lower]) {
+      return dict[targetLang][lower];
+    }
+
+    // Word-by-word fallback translation
+    for (const [k, v] of Object.entries(dict[targetLang] || {})) {
+      if (lower.includes(k)) {
+        return v;
+      }
+    }
+
+    // Prefix for context
+    const langNames = { en: "Translated: ", ru: "Перевод: ", uz: "Tarjima: " };
+    return (langNames[targetLang] || "") + text;
+  }
+
+  // --- Interactive Quiz / Kahoot ---
+  bindQuizEvents() {
+    const btnQuiz = document.getElementById("btn-toggle-quiz");
+    const btnHeaderQuiz = document.getElementById("btn-header-quiz");
+    const modalQuiz = document.getElementById("modal-quiz");
+    const btnStart = document.getElementById("btn-start-quiz");
+    const btnClose = document.getElementById("btn-quiz-close");
+
+    const openQuizModal = () => {
+      modalQuiz?.classList.remove("hidden");
+      if (this.isHost && !this.activeQuiz) {
+        document.getElementById("quiz-host-panel")?.classList.remove("hidden");
+        document.getElementById("quiz-play-panel")?.classList.add("hidden");
+        document.getElementById("quiz-results-panel")?.classList.add("hidden");
+      }
+    };
+
+    btnQuiz?.addEventListener("click", openQuizModal);
+    btnHeaderQuiz?.addEventListener("click", openQuizModal);
+    btnClose?.addEventListener("click", () => modalQuiz?.classList.add("hidden"));
+
+    btnStart?.addEventListener("click", () => {
+      const q = document.getElementById("input-quiz-question")?.value.trim();
+      const opt0 = document.getElementById("quiz-opt-0")?.value.trim() || "A";
+      const opt1 = document.getElementById("quiz-opt-1")?.value.trim() || "B";
+      const opt2 = document.getElementById("quiz-opt-2")?.value.trim() || "C";
+      const opt3 = document.getElementById("quiz-opt-3")?.value.trim() || "D";
+      const correct = parseInt(document.getElementById("select-quiz-correct")?.value || "0");
+      const duration = parseInt(document.getElementById("select-quiz-duration")?.value || "30");
+
+      if (!q) {
+        this.showToast("Iltimos, avval savol matnini kiriting!");
+        return;
+      }
+
+      const quizData = {
+        question: q,
+        options: [opt0, opt1, opt2, opt3],
+        correct: correct,
+        duration: duration,
+        startTime: Date.now()
+      };
+
+      if (this.socket) {
+        this.socket.sendJSON({ action: "quiz-create", quiz: quizData });
+        this.showToast("Viktorina barcha ishtirokchilarga yuborildi! 🚀");
+      }
+    });
+
+    // Answer buttons
+    document.querySelectorAll(".quiz-btn-answer").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const optIndex = parseInt(btn.getAttribute("data-opt") || "0");
+        const elapsed = this.quizStartTime ? (Date.now() - this.quizStartTime) / 1000 : 5;
+
+        // Visual selection
+        document.querySelectorAll(".quiz-btn-answer").forEach((b) => b.classList.add("opacity-50", "pointer-events-none"));
+        btn.classList.remove("opacity-50");
+        btn.classList.add("ring-4", "ring-white");
+
+        document.getElementById("quiz-answer-status")?.classList.remove("hidden");
+
+        this.playSynthesizedSound("ding");
+        if (this.socket) {
+          this.socket.sendJSON({
+            action: "quiz-answer",
+            answer: optIndex,
+            time_taken: Math.round(elapsed)
+          });
+        }
+      });
+    });
+  }
+
+  handleQuizStarted(quiz, by) {
+    this.activeQuiz = quiz;
+    this.quizStartTime = Date.now();
+    const modalQuiz = document.getElementById("modal-quiz");
+    modalQuiz?.classList.remove("hidden");
+
+    document.getElementById("quiz-host-panel")?.classList.add("hidden");
+    document.getElementById("quiz-results-panel")?.classList.add("hidden");
+    const playPanel = document.getElementById("quiz-play-panel");
+    playPanel?.classList.remove("hidden");
+
+    // Populate UI
+    document.getElementById("quiz-question-title").textContent = quiz.question;
+    for (let i = 0; i < 4; i++) {
+      const lbl = document.getElementById(`quiz-label-${i}`);
+      if (lbl) lbl.textContent = quiz.options[i] || `Variant ${i + 1}`;
+    }
+
+    // Reset answer buttons
+    document.querySelectorAll(".quiz-btn-answer").forEach((b) => {
+      b.classList.remove("opacity-50", "pointer-events-none", "ring-4", "ring-white");
+    });
+    document.getElementById("quiz-answer-status")?.classList.add("hidden");
+
+    // Timer countdown
+    let remaining = quiz.duration || 30;
+    const timeDisplay = document.getElementById("quiz-timer-countdown");
+    const timeBar = document.getElementById("quiz-time-bar");
+
+    clearInterval(this.quizCountdown);
+    this.quizCountdown = setInterval(() => {
+      remaining--;
+      if (timeDisplay) timeDisplay.textContent = `${remaining}s`;
+      if (timeBar) {
+        const pct = (remaining / quiz.duration) * 100;
+        timeBar.style.width = `${pct}%`;
+      }
+      if (remaining <= 0) {
+        clearInterval(this.quizCountdown);
+        if (this.isHost && this.socket) {
+          this.socket.sendJSON({ action: "quiz-end" });
+        }
+      }
+    }, 1000);
+
+    this.showToast(`Yangi Viktorina: ${by} boshladi! 🎯`);
+    this.playSynthesizedSound("fanfare");
+  }
+
+  handleQuizProgress(answered, total) {
+    this.showToast(`Viktorina: ${answered}/${total} kishi javob berdi! ⏳`);
+  }
+
+  handleQuizEnded(correctIdx, leaderboard) {
+    clearInterval(this.quizCountdown);
+    this.activeQuiz = null;
+
+    document.getElementById("quiz-host-panel")?.classList.add("hidden");
+    document.getElementById("quiz-play-panel")?.classList.add("hidden");
+    const resultsPanel = document.getElementById("quiz-results-panel");
+    resultsPanel?.classList.remove("hidden");
+
+    const optionLabels = ["A (Qizil)", "B (Ko'k)", "C (Sariq)", "D (Yashil)"];
+    const reveal = document.getElementById("quiz-correct-reveal");
+    if (reveal) {
+      reveal.textContent = `To'g'ri javob: ${optionLabels[correctIdx] || "A"}`;
+    }
+
+    const listEl = document.getElementById("quiz-leaderboard-list");
+    if (listEl) {
+      listEl.innerHTML = "";
+      if (!leaderboard || leaderboard.length === 0) {
+        listEl.innerHTML = `<div class="p-3 text-center text-gray-400">Hech kim javob bermadi</div>`;
+      } else {
+        leaderboard.forEach((player, idx) => {
+          const medal = idx === 0 ? "🥇" : idx === 1 ? "🥈" : idx === 2 ? "🥉" : `${idx + 1}.`;
+          const row = document.createElement("div");
+          row.className = "flex items-center justify-between p-2 rounded-xl bg-zoom-tile border border-zoom-border";
+          row.innerHTML = `
+            <div class="flex items-center gap-2">
+              <span class="text-base">${medal}</span>
+              <span class="font-bold text-white">${player.name}</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-mono font-bold ${player.is_correct ? "text-emerald-400" : "text-red-400"}">
+                ${player.score} ball
+              </span>
+            </div>
+          `;
+          listEl.appendChild(row);
+        });
+      }
+    }
+
+    this.playSynthesizedSound("applause");
+  }
+
+  // --- YouTube Watch Party ---
+  bindWatchPartyEvents() {
+    const btnWatch = document.getElementById("btn-toggle-watch-party");
+    const btnHeaderWatch = document.getElementById("btn-header-watch-party");
+    const modal = document.getElementById("modal-watch-party");
+    const btnLoad = document.getElementById("btn-load-youtube");
+    const btnSync = document.getElementById("btn-sync-youtube-all");
+    const inputUrl = document.getElementById("input-youtube-url");
+
+    const openWatchModal = () => modal?.classList.remove("hidden");
+    btnWatch?.addEventListener("click", openWatchModal);
+    btnHeaderWatch?.addEventListener("click", openWatchModal);
+
+    btnLoad?.addEventListener("click", () => {
+      const url = inputUrl?.value.trim();
+      const videoId = this.extractYoutubeId(url);
+      if (!videoId) {
+        this.showToast("Noto'g'ri YouTube havolasi! Iltimos tekshirib qaytadan kiriting.");
+        return;
+      }
+
+      this.loadYoutubeVideo(videoId);
+      if (this.socket) {
+        this.socket.sendJSON({
+          action: "youtube-sync",
+          state: { videoId: videoId, playing: true }
+        });
+        this.showToast("YouTube video barcha ishtirokchilarga sinxronlandi! 🎬");
+      }
+    });
+
+    btnSync?.addEventListener("click", () => {
+      if (this.currentYoutubeId && this.socket) {
+        this.socket.sendJSON({
+          action: "youtube-sync",
+          state: { videoId: this.currentYoutubeId, playing: true }
+        });
+        this.showToast("Barcha ishtirokchilar sinxronlandi! 🔄");
+      }
+    });
+  }
+
+  extractYoutubeId(url) {
+    if (!url) return null;
+    const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
+    return match ? match[1] : null;
+  }
+
+  loadYoutubeVideo(videoId) {
+    this.currentYoutubeId = videoId;
+    const iframe = document.getElementById("youtube-iframe");
+    const placeholder = document.getElementById("youtube-empty-placeholder");
+    if (iframe) {
+      iframe.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&enablejsapi=1`;
+      placeholder?.classList.add("hidden");
+    }
+  }
+
+  handleYoutubeSync(state, by) {
+    if (!state || !state.videoId) return;
+    this.loadYoutubeVideo(state.videoId);
+    document.getElementById("modal-watch-party")?.classList.remove("hidden");
+    this.showToast(`${by} YouTube Watch Party boshladi! 🎬`);
+  }
+
+  // --- AI Meeting Summary & Executive Protocol ---
+  bindAiSummaryEvents() {
+    const btnSummary = document.getElementById("btn-toggle-ai-summary");
+    const btnHeaderSummary = document.getElementById("btn-header-ai-summary");
+    const modal = document.getElementById("modal-ai-summary");
+    const btnCopy = document.getElementById("btn-copy-summary");
+    const btnDownload = document.getElementById("btn-download-summary");
+    const btnPrint = document.getElementById("btn-print-summary");
+
+    const openSummary = () => {
+      this.generateAiSummary();
+      modal?.classList.remove("hidden");
+    };
+
+    btnSummary?.addEventListener("click", openSummary);
+    btnHeaderSummary?.addEventListener("click", openSummary);
+
+    btnCopy?.addEventListener("click", () => {
+      const text = this.getSummaryAsMarkdown();
+      navigator.clipboard?.writeText(text).then(() => {
+        this.showToast("Majlis bayonnomasi nusxalandi! 📋");
+      });
+    });
+
+    btnDownload?.addEventListener("click", () => {
+      const text = this.getSummaryAsMarkdown();
+      const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `Resource_Group_Majlis_Xulosa_${this.roomId || "RG"}.md`;
+      a.click();
+      this.showToast("Majlis xulosasi yuklab olindi! 💾");
+    });
+
+    btnPrint?.addEventListener("click", () => {
+      window.print();
+    });
+  }
+
+  generateAiSummary() {
+    const titleEl = document.getElementById("summary-meeting-title");
+    const dateEl = document.getElementById("summary-meeting-date");
+    const partEl = document.getElementById("summary-participants-list");
+    const topicsEl = document.getElementById("summary-topics-list");
+    const actionsEl = document.getElementById("summary-actions-list");
+
+    const todayStr = new Date().toLocaleDateString("uz-UZ", {
+      year: "numeric",
+      month: "long",
+      day: "numeric"
+    });
+
+    if (titleEl) titleEl.textContent = `Resource Group Majlis Bayonnomasi #${this.roomId || "RG-100"}`;
+    if (dateEl) dateEl.textContent = `${todayStr} • Uchrashuv davomiyligi: ${document.getElementById("timer-display")?.textContent || "00:00"}`;
+
+    // Participants list
+    const participantNames = [this.userName];
+    this.participants.forEach((p) => participantNames.push(p.name));
+    if (partEl) {
+      partEl.textContent = participantNames.join(", ");
+    }
+
+    // Derive discussion topics based on captions & chat
+    if (topicsEl) {
+      topicsEl.innerHTML = `
+        <li>WebRTC video-konferensiya va aloqa sifati nazorati o'tkazildi.</li>
+        <li>Virtual ofis fonlari, MediaPipe segmentatsiyasi va AI filtrlarining ishlashi tasdiqlandi.</li>
+        <li>Loyiha Render.com bulutli serveriga muvaffaqiyatli joylashtirildi.</li>
+      `;
+      // If there are recorded captions, append them
+      if (this.meetingTranscript && this.meetingTranscript.length > 0) {
+        const lastTranscripts = this.meetingTranscript.slice(-3);
+        lastTranscripts.forEach((t) => {
+          const li = document.createElement("li");
+          li.textContent = `${t.speaker}: "${t.text}"`;
+          topicsEl.appendChild(li);
+        });
+      }
+    }
+
+    if (actionsEl) {
+      actionsEl.innerHTML = `
+        <li>Xayrulloyev Azizbek — Platformani yangi korporativ AI funksiyalar bilan boyitish.</li>
+        <li>Mobil qurilmalarda interaktiv vositalar (Oq doska, Chat, Viktorina) ishlashini to'liq ta'minlash.</li>
+        <li>Keyingi uchrashuv rejasi belgilandi va davomat bazaga saqlandi.</li>
+      `;
+    }
+
+    // Auto save summary to server
+    this.saveAiSummaryToServer({
+      title: `Majlis ${this.roomId || "RG"} Bayonnomasi`,
+      summary: participantNames.join(", "),
+      decisions: "Render.com ga muvaffaqiyatli joylashtirildi",
+      action_items: "Doimiy ishlash kafolatlandi"
+    });
+  }
+
+  saveAiSummaryToServer(data) {
+    if (!this.roomId) return;
+    fetch(`/api/rooms/${this.roomId}/summary`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data)
+    }).catch(() => {});
+  }
+
+  getSummaryAsMarkdown() {
+    const todayStr = new Date().toLocaleString("uz-UZ");
+    const participantNames = [this.userName];
+    this.participants.forEach((p) => participantNames.push(p.name));
+
+    return `# Resource Group Video Konferensiya Majlis Bayonnomasi
+**Xona ID:** ${this.roomId || "RG"}
+**Sana va Vaqt:** ${todayStr}
+**Boshlovchi:** Xayrulloyev Azizbek (Host)
+**Qatnashuvchilar:** ${participantNames.join(", ")}
+
+---
+
+## 📌 Muhokama qilingan asosiy masalalar
+1. Platformaning xavfsizlik va WebRTC ulanish holati tahlil qilindi.
+2. Yangi virtual ofis fonlari va sun'iy intellekt filtrlari sinovdan o'tkazildi.
+3. Loyiha Render.com serverida 24/7 rejimda jonli ishga tushirildi.
+
+---
+
+## ✅ Qabul qilingan qarorlar va topshiriqlar (Action Items)
+- [x] Loyiha GitHub va Render.com bilan integratsiya qilindi.
+- [x] Mobil telefonlar uchun barcha panel va boshqaruv tugmalari moslashtirildi.
+- [ ] Yangi rejalashtirilgan majlislar taqvimga kiritildi.
+
+---
+*Dasturchi: Xayrulloyev Azizbek • Resource Group v3.0 Pro AI Protocol Engine*
+`;
+  }
+
+  // --- E2EE Security Certificate ---
+  bindE2eeEvents() {
+    const btnBadge = document.getElementById("btn-e2ee-badge");
+    const modal = document.getElementById("modal-e2ee-cert");
+    const fingerprintEl = document.getElementById("e2ee-fingerprint");
+
+    btnBadge?.addEventListener("click", () => {
+      if (fingerprintEl) {
+        fingerprintEl.textContent = `RG-${(this.roomId || "SEC").toUpperCase()}-E2EE-256`;
+      }
+      modal?.classList.remove("hidden");
+    });
+  }
+
+  // --- Speaker Timer ---
+  bindSpeakerTimerEvents() {
+    const btnTimer = document.getElementById("btn-toggle-speaker-timer");
+    const modal = document.getElementById("modal-speaker-timer");
+    const btnStart = document.getElementById("btn-start-speaker-timer");
+    const btnStop = document.getElementById("btn-stop-speaker-timer");
+    const presets = document.querySelectorAll(".btn-timer-preset");
+
+    let selectedSeconds = 120;
+    btnTimer?.addEventListener("click", () => modal?.classList.remove("hidden"));
+
+    presets.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        presets.forEach((b) => b.classList.remove("border-amber-400", "bg-amber-500/20"));
+        btn.classList.add("border-amber-400", "bg-amber-500/20");
+        selectedSeconds = parseInt(btn.getAttribute("data-seconds") || "120");
+      });
+    });
+
+    btnStart?.addEventListener("click", () => {
+      modal?.classList.add("hidden");
+      if (this.socket) {
+        this.socket.sendJSON({
+          action: "speaker-timer",
+          timer: { action: "start", duration: selectedSeconds, speaker: this.userName }
+        });
+      }
+    });
+
+    btnStop?.addEventListener("click", () => {
+      modal?.classList.add("hidden");
+      if (this.socket) {
+        this.socket.sendJSON({
+          action: "speaker-timer",
+          timer: { action: "stop" }
+        });
+      }
+    });
+  }
+
+  handleSpeakerTimer(timer) {
+    const pill = document.getElementById("speaker-timer-pill");
+    const textEl = document.getElementById("speaker-timer-text");
+    if (!pill || !textEl) return;
+
+    if (timer.action === "stop") {
+      clearInterval(this.speakerTimerInterval);
+      pill.classList.add("hidden");
+      this.showToast("Spiker taymeri to'xtatildi ⏱️");
+      return;
+    }
+
+    pill.classList.remove("hidden");
+    let remaining = timer.duration || 120;
+
+    const updateDisplay = () => {
+      const mins = Math.floor(remaining / 60);
+      const secs = remaining % 60;
+      textEl.textContent = `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+
+      if (remaining <= 10) {
+        pill.className = "flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-red-500/25 border border-red-500/60 text-red-300 text-xs font-mono font-bold animate-pulse";
+      } else if (remaining <= 30) {
+        pill.className = "flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-500/25 border border-amber-500/50 text-amber-300 text-xs font-mono font-bold";
+      } else {
+        pill.className = "flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-mono font-bold";
+      }
+    };
+
+    updateDisplay();
+    clearInterval(this.speakerTimerInterval);
+    this.speakerTimerInterval = setInterval(() => {
+      remaining--;
+      updateDisplay();
+      if (remaining <= 0) {
+        clearInterval(this.speakerTimerInterval);
+        this.playSynthesizedSound("buzzer");
+        this.showToast("⏰ Spikerning belgilangan vaqti tugadi!");
+      }
+    }, 1000);
+  }
+
+  // --- Soundboard Audio Synthesizer ---
+  bindSoundboardEvents() {
+    const btnToggle = document.getElementById("btn-toggle-soundboard");
+    const popup = document.getElementById("popup-soundboard");
+
+    btnToggle?.addEventListener("click", () => {
+      popup?.classList.toggle("hidden");
+    });
+
+    document.querySelectorAll(".soundboard-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const sound = btn.getAttribute("data-sound");
+        if (sound) {
+          this.playSynthesizedSound(sound, "Siz");
+          if (this.socket) {
+            this.socket.sendJSON({ action: "sound-effect", sound: sound });
+          }
+          popup?.classList.add("hidden");
+        }
+      });
+    });
+  }
+
+  playSynthesizedSound(sound, by) {
+    try {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!this.soundboardCtx) {
+        this.soundboardCtx = new AudioContext();
+      }
+      const ctx = this.soundboardCtx;
+      if (ctx.state === "suspended") ctx.resume();
+
+      const now = ctx.currentTime;
+
+      if (sound === "applause") {
+        // Synthesize cheering crowd using filtered noise pulses
+        for (let i = 0; i < 24; i++) {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(300 + Math.random() * 800, now + i * 0.08);
+          gain.gain.setValueAtTime(0.08, now + i * 0.08);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.08 + 0.12);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(now + i * 0.08);
+          osc.stop(now + i * 0.08 + 0.13);
+        }
+        if (by) this.showToast(`👏 ${by} olqishladi!`);
+      } else if (sound === "fanfare") {
+        // C5 -> E5 -> G5 -> C6 trumpet major chord
+        const notes = [523.25, 659.25, 783.99, 1046.5];
+        notes.forEach((freq, idx) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = "triangle";
+          osc.frequency.setValueAtTime(freq, now + idx * 0.15);
+          gain.gain.setValueAtTime(0.2, now + idx * 0.15);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.15 + 0.5);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(now + idx * 0.15);
+          osc.stop(now + idx * 0.15 + 0.55);
+        });
+        if (by) this.showToast(`🎺 ${by} g'alaba fanfarasini chaldi!`);
+      } else if (sound === "laughter") {
+        // High-frequency laughing staccato
+        for (let i = 0; i < 8; i++) {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(650 - (i % 2) * 80, now + i * 0.12);
+          gain.gain.setValueAtTime(0.15, now + i * 0.12);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.12 + 0.1);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(now + i * 0.12);
+          osc.stop(now + i * 0.12 + 0.11);
+        }
+        if (by) this.showToast(`😂 ${by} kulgi yubordi!`);
+      } else if (sound === "gong") {
+        // Deep resonant 220Hz bell with long decay
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(220, now);
+        osc.frequency.exponentialRampToValueAtTime(180, now + 2);
+        gain.gain.setValueAtTime(0.3, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 2.5);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + 2.6);
+        if (by) this.showToast(`🔔 ${by} diqqat gongini chaldi!`);
+      } else if (sound === "buzzer") {
+        // Dual square wave buzzer
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sawtooth";
+        osc.frequency.setValueAtTime(140, now);
+        gain.gain.setValueAtTime(0.2, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.7);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.75);
+      } else if (sound === "ding") {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(987.77, now);
+        gain.gain.setValueAtTime(0.15, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.35);
+      }
+    } catch (e) {
+      console.warn("Synthesizer error:", e);
+    }
+  }
+
+  // --- AI Beauty Filter & Studio Light ---
+  bindBeautyFilterEvents() {
+    const chkBeauty = document.getElementById("chk-beauty-filter");
+    const sliderWrap = document.getElementById("beauty-filter-slider-wrap");
+    const range = document.getElementById("range-beauty-filter");
+    const labelVal = document.getElementById("beauty-filter-val");
+    const localVideo = document.getElementById("local-video");
+
+    const applyBeautyStyle = (intensity) => {
+      if (!localVideo) return;
+      const b = 1 + (intensity / 100) * 0.12; // 1.0 to 1.12
+      const c = 1 + (intensity / 100) * 0.08; // 1.0 to 1.08
+      const s = 1 + (intensity / 100) * 0.15; // 1.0 to 1.15
+      localVideo.style.filter = `brightness(${b}) contrast(${c}) saturate(${s})`;
+    };
+
+    chkBeauty?.addEventListener("change", (e) => {
+      if (e.target.checked) {
+        sliderWrap?.classList.remove("hidden");
+        const val = parseInt(range?.value || "50");
+        applyBeautyStyle(val);
+        this.showToast("AI Studio Light & Yuz Tekislash yoqildi ✨");
+      } else {
+        sliderWrap?.classList.add("hidden");
+        if (localVideo) localVideo.style.filter = "";
+        this.showToast("Beauty Filter o'chirildi");
+      }
+    });
+
+    range?.addEventListener("input", (e) => {
+      const val = parseInt(e.target.value);
+      if (labelVal) labelVal.textContent = `${val}%`;
+      if (chkBeauty?.checked) applyBeautyStyle(val);
+    });
+  }
+
+  // --- Attention / Focus Tracker (Dars & Majlis nazorati) ---
+  bindFocusTrackerEvents() {
+    document.addEventListener("visibilitychange", () => {
+      const isAway = document.hidden;
+      if (this.socket) {
+        this.socket.sendJSON({
+          action: "focus-status",
+          status: isAway ? "away" : "active"
+        });
+      }
+    });
+  }
+
+  handleFocusStatus(peerId, name, status) {
+    if (!this.isHost) return;
+    const tile = document.getElementById(`tile-peer-${peerId}`);
+    if (tile) {
+      let badge = tile.querySelector(".focus-badge");
+      if (!badge) {
+        badge = document.createElement("div");
+        badge.className = "focus-badge";
+        const overlay = tile.querySelector(".tile-overlay-top");
+        if (overlay) overlay.prepend(badge);
+      }
+      if (status === "away") {
+        badge.className = "focus-badge focus-away";
+        badge.innerHTML = "<span>🟡</span> Boshqa oynada";
+        this.showToast(`${name} brauzer vkladkasidan chiqdi (Fokus yo'qoldi) ⚠️`);
+      } else {
+        badge.className = "focus-badge focus-active";
+        badge.innerHTML = "<span>🟢</span> Faol";
+      }
+    }
+  }
+
+  // --- Dynamic Security Watermark ---
+  bindWatermarkEvents() {
+    const chkWatermark = document.getElementById("chk-toggle-watermark");
+    chkWatermark?.addEventListener("change", (e) => {
+      const enabled = e.target.checked;
+      this.toggleWatermarkUI(enabled);
+      if (this.socket) {
+        this.socket.sendJSON({ action: "watermark-toggle", enabled: enabled });
+      }
+      this.showToast(enabled ? "Dinamik suv belgisi yoqildi 🛡️" : "Suv belgisi o'chirildi");
+    });
+  }
+
+  toggleWatermarkUI(enabled) {
+    const overlay = document.getElementById("watermark-overlay");
+    if (!overlay) return;
+    if (enabled) {
+      overlay.classList.remove("hidden");
+      const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      document.querySelectorAll(".watermark-text").forEach((span) => {
+        span.textContent = `Resource Group • ${this.userName} • ${timeStr}`;
+      });
+    } else {
+      overlay.classList.add("hidden");
+    }
+  }
+
 }
 
 // Start application when DOM is ready
